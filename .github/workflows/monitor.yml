@@ -1,0 +1,46 @@
+name: kaspi-price-monitor
+
+on:
+  schedule:
+    - cron: "0 * * * *"      # каждый час в :00 UTC (может опаздывать на 5-20 мин)
+  workflow_dispatch: {}       # кнопка "Run workflow" для ручного запуска
+
+# нужно, чтобы workflow мог коммитить собранные данные обратно
+permissions:
+  contents: write
+
+concurrency:
+  group: monitor
+  cancel-in-progress: false
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install deps
+        run: pip install requests
+
+      - name: Run monitor
+        env:
+          MERCHANT: Nemo
+          # CITIES: "750000000:Алматы,710000000:Астана,511010000:Шымкент,470000000:Актобе"
+        run: python monitor.py
+
+      - name: Commit data
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add data/
+          if git diff --cached --quiet; then
+            echo "нет изменений в данных"
+          else
+            git commit -m "snapshot $(date -u +%Y-%m-%dT%H:%MZ) [skip ci]"
+            git push
+          fi
