@@ -3,3 +3,4 @@ __pycache__/
 _preview_*.png
 .vercel
 .DS_Store
+.gstack/
