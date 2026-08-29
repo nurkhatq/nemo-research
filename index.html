@@ -131,6 +131,14 @@
       <div id="discTable"></div>
       <button class="toggle" id="discMore" hidden style="margin-top:10px"></button>
     </div>
+    <div class="grid" style="margin-bottom:16px">
+      <div class="card"><h2>«Карусель» скидок</h2>
+        <div class="cap">у кого скидка включалась заново чаще всего — быстрые «поднял/опустил» (весь период, все города)</div>
+        <div id="cycleTable"></div></div>
+      <div class="card"><h2>Скидки по ценовым категориям</h2>
+        <div class="cap">какого размера скидки держат в каждом ценовом диапазоне (текущий срез, по базовой цене)</div>
+        <div id="bandTable"></div></div>
+    </div>
     <div class="grid">
       <div class="card"><h2>Средняя скидка, %</h2><div class="cap">по времени</div><div class="chartbox"><canvas id="cDisc"></canvas></div></div>
       <div class="card"><h2>Товаров со скидкой</h2><div class="cap">сколько позиций в акции</div><div class="chartbox"><canvas id="cCount"></canvas></div></div>
@@ -334,6 +342,59 @@ function buildHikeIndex(){
       HIKE[k]={days:(new Date(start)-new Date(last.ts))/864e5, ts:last.ts, old:+last.old, new:+last.new};
   });
 }
+// «карусель»: сколько раз скидка включалась заново (переходов 0 → >0), по городу-максимуму
+let CYCLE_ROWS=[];
+function buildCycleIndex(){
+  const cyc={},pch={};
+  RAW.changes.forEach(r=>{
+    const k=r.masterSku+"|"+r.city;
+    if(r.field=="discount"&&+r.old==0&&+r.new>0) cyc[k]=(cyc[k]||0)+1;
+    else if(r.field=="price") pch[k]=(pch[k]||0)+1;
+  });
+  const bySku={};
+  Object.entries(cyc).forEach(([k,n])=>{
+    const sku=k.split("|")[0];
+    const p=bySku[sku]=bySku[sku]||{sku,cycles:0,pch:0};
+    if(n>p.cycles)p.cycles=n;
+  });
+  Object.entries(pch).forEach(([k,n])=>{
+    const sku=k.split("|")[0];
+    if(bySku[sku]&&n>bySku[sku].pch)bySku[sku].pch=n;
+  });
+  CYCLE_ROWS=Object.values(bySku).filter(p=>p.cycles>=3).sort((a,b)=>b.cycles-a.cycles).slice(0,15);
+}
+function renderCycleList(){
+  const titles={}; PRODUCTS.forEach(p=>titles[p.sku]=p.title);
+  const curDisc={};
+  RAW.latest.forEach(r=>{ if(+r.discount>0&&(!curDisc[r.masterSku]||+r.discount>curDisc[r.masterSku])) curDisc[r.masterSku]=+r.discount; });
+  document.getElementById("cycleTable").innerHTML = CYCLE_ROWS.length ?
+    `<table><thead><tr><th>Товар</th><th class="num" title="сколько раз скидка включалась заново">Вкл. скидку</th><th class="num">Изм. цены</th><th class="num">Сейчас</th></tr></thead><tbody>`+
+    CYCLE_ROWS.map(p=>`<tr><td><span class="linkish" data-sku="${esc(p.sku)}">${esc(titles[p.sku]||p.sku).slice(0,38)}</span></td>
+      <td class="num">${p.cycles} раз</td><td class="num">${fmt(p.pch)}</td>
+      <td class="num">${curDisc[p.sku]?curDisc[p.sku]+"%":"—"}</td></tr>`).join("")+`</tbody></table>`
+    : `<div class="empty">таких товаров пока нет</div>`;
+  document.querySelectorAll("#cycleTable .linkish").forEach(el=>el.onclick=()=>selectProduct(el.dataset.sku));
+}
+// скидки по ценовым диапазонам (базовая цена = цена до скидки)
+function renderBands(){
+  const lat=latestF();
+  const bands=[["до 5 тыс ₸",0,5e3],["5–20 тыс",5e3,2e4],["20–50 тыс",2e4,5e4],
+    ["50–100 тыс",5e4,1e5],["100–300 тыс",1e5,3e5],["300 тыс +",3e5,1/0]];
+  document.getElementById("bandTable").innerHTML =
+    `<table><thead><tr><th>Цена (база)</th><th class="num">Товаров</th><th class="num">Со скидкой</th><th class="num" title="самый частый размер скидки">Типичная</th><th class="num">Средняя</th><th class="num">Макс</th></tr></thead><tbody>`+
+    bands.map(([lab,lo,hi])=>{
+      const items=lat.filter(r=>{const b=+r.priceBeforeDiscount||+r.price;return b>=lo&&b<hi;});
+      const disc=items.filter(r=>+r.discount>0);
+      let mode="—";
+      if(disc.length){const f={};disc.forEach(r=>f[+r.discount]=(f[+r.discount]||0)+1);
+        mode=Object.entries(f).sort((a,b)=>b[1]-a[1])[0][0]+"%";}
+      const avg=disc.length?(disc.reduce((s,r)=>s+ +r.discount,0)/disc.length).toFixed(1)+"%":"—";
+      const max=disc.length?Math.max(...disc.map(r=>+r.discount))+"%":"—";
+      const share=items.length?Math.round(disc.length/items.length*100)+"%":"—";
+      return `<tr><td>${lab}</td><td class="num">${fmt(items.length)}</td><td class="num">${share}</td>
+      <td class="num">${mode}</td><td class="num">${avg}</td><td class="num">${max}</td></tr>`;
+    }).join("")+`</tbody></table>`;
+}
 function hikeCell(p){
   // берём город, чей старт скидки совпадает с показанным, иначе любой с данными
   let h=null,start=null;
@@ -473,7 +534,7 @@ function selectProduct(sku){
 })();
 
 // ── сборка ──
-function renderAll(){ renderKPI(); renderDiscountList(); renderCharts(); renderTables(); if(STATE.sku)renderProduct(); }
+function renderAll(){ renderKPI(); renderDiscountList(); renderCycleList(); renderBands(); renderCharts(); renderTables(); if(STATE.sku)renderProduct(); }
 
 function buildCityFilter(){
   const cities=[...new Set(RAW.latest.map(r=>r.city))];
@@ -499,6 +560,7 @@ async function init(){
   buildProductIndex();
   buildDiscountIndex();
   buildHikeIndex();
+  buildCycleIndex();
   const last = runs.length? runs.map(r=>r.ts).sort().at(-1) : null;
   document.getElementById("updated").textContent = last ?
     ("Последний снимок: "+last.replace("T"," ").replace("Z"," UTC")+" · всего замеров: "+new Set(runs.map(r=>r.ts)).size) :
