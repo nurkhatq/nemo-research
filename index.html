@@ -60,6 +60,7 @@
   td.num{text-align:right;font-variant-numeric:tabular-nums}
   .up{color:var(--bad)} .down{color:var(--good)}
   .pill{display:inline-block;font-size:11px;padding:1px 7px;border-radius:20px;background:var(--grid);color:var(--ink2)}
+  .pill.new{background:var(--good);color:#fff}
   .empty{text-align:center;color:var(--muted);padding:48px 16px;font-size:14px}
   .muted{color:var(--muted)}
   .searchbox{position:relative;max-width:520px}
@@ -124,6 +125,12 @@
         <div id="pChanges"></div>
       </div>
     </div>
+    <div class="card" id="discCard" style="margin-bottom:16px">
+      <h2>Со скидкой прямо сейчас</h2>
+      <div class="cap" id="discCap">свежие скидки первыми — сортировка по моменту появления</div>
+      <div id="discTable"></div>
+      <button class="toggle" id="discMore" hidden style="margin-top:10px"></button>
+    </div>
     <div class="grid">
       <div class="card"><h2>Средняя скидка, %</h2><div class="cap">по времени</div><div class="chartbox"><canvas id="cDisc"></canvas></div></div>
       <div class="card"><h2>Товаров со скидкой</h2><div class="cap">сколько позиций в акции</div><div class="chartbox"><canvas id="cCount"></canvas></div></div>
@@ -140,7 +147,7 @@ const CITY_NAMES = {"750000000":"Алматы","710000000":"Астана","51101
 // Данные читаем прямо из репозитория (raw GitHub) — дашборд всегда свежий без пересборки Vercel.
 const REPO = "nurkhatq/nemo-research", BRANCH = "main";
 const DATA_SOURCES = [`https://raw.githubusercontent.com/${REPO}/${BRANCH}/data/`, "./data/"];
-let STATE = {city:"all", range:30, sku:null};
+let STATE = {city:"all", range:30, sku:null, discAll:false};
 let RAW = {runs:[], changes:[], latest:[]};
 let CHARTS = {};
 
@@ -292,6 +299,64 @@ function buildProductIndex(){
 }
 const cityColor=i=>[css("--s1"),css("--s2"),css("--good"),"#9d6ce0"][i%4];
 const shortTs=t=>t.slice(5,16).replace("T"," ");
+
+// ── список «со скидкой прямо сейчас», свежие первыми ──
+// DISC_START[sku|city] = ts, когда началась ТЕКУЩАЯ непрерывная скидка
+// (последний переход 0 → >0 без последующего возврата в 0)
+let DISC_START={};
+function buildDiscountIndex(){
+  DISC_START={};
+  RAW.changes.filter(r=>r.field=="discount").sort((a,b)=>a.ts<b.ts?-1:1).forEach(r=>{
+    const k=r.masterSku+"|"+r.city;
+    if(+r.new>0&&+r.old==0) DISC_START[k]=r.ts;
+    else if(+r.new==0) delete DISC_START[k];
+  });
+}
+function ago(ts){
+  const h=(Date.now()-new Date(ts).getTime())/36e5;
+  if(h<1) return "меньше часа назад";
+  if(h<48) return Math.round(h)+" ч назад";
+  return Math.round(h/24)+" дн назад";
+}
+function renderDiscountList(){
+  const lat=RAW.latest.filter(r=>+r.discount>0&&(STATE.city=="all"||r.city==STATE.city));
+  const bySku={};
+  lat.forEach(r=>{
+    (bySku[r.masterSku]=bySku[r.masterSku]||{sku:r.masterSku,title:r.title,cities:[]}).cities.push(
+      {name:r.cityName,disc:+r.discount,price:+r.price,start:DISC_START[r.masterSku+"|"+r.city]||null});
+  });
+  const rows=Object.values(bySku).map(p=>{
+    p.maxDisc=Math.max(...p.cities.map(c=>c.disc));
+    p.price=p.cities.find(c=>c.disc==p.maxDisc).price;
+    p.start=p.cities.reduce((s,c)=>c.start&&(!s||c.start>s)?c.start:s,null);
+    return p;
+  });
+  rows.sort((a,b)=>{
+    if(a.start&&b.start) return a.start<b.start?1:-1;
+    if(a.start) return -1;
+    if(b.start) return 1;
+    return b.maxDisc-a.maxDisc;
+  });
+  document.getElementById("discCap").textContent =
+    `свежие скидки первыми — сортировка по моменту появления · сейчас в акции: ${fmt(rows.length)} товаров`;
+  const LIM=30, all=STATE.discAll, shown=all?rows:rows.slice(0,LIM);
+  const fresh24=new Date(Date.now()-864e5).toISOString();
+  document.getElementById("discTable").innerHTML = rows.length ?
+    `<table><thead><tr><th>Товар</th><th class="num">Скидка</th><th class="num">Цена</th><th>Города</th><th>Скидка появилась</th></tr></thead><tbody>`+
+    shown.map(p=>{
+      const isFresh=p.start&&p.start>=fresh24;
+      return `<tr><td><span class="linkish" data-sku="${esc(p.sku)}">${esc(p.title).slice(0,48)}</span></td>
+      <td class="num">${p.maxDisc}%</td><td class="num">${fmt(p.price)} ₸</td>
+      <td>${p.cities.map(c=>`<span class="pill">${esc(c.name)} ${c.disc}%</span>`).join(" ")}</td>
+      <td class="muted" title="${p.start||""}">${p.start?ago(p.start):"до начала наблюдений"}${isFresh?' <span class="pill new">новая</span>':""}</td></tr>`;
+    }).join("")+`</tbody></table>` : `<div class="empty">сейчас ни одного товара со скидкой</div>`;
+  const btn=document.getElementById("discMore");
+  btn.hidden=rows.length<=LIM;
+  btn.textContent=all?"свернуть":`показать все (${fmt(rows.length)})`;
+  btn.onclick=()=>{STATE.discAll=!STATE.discAll;renderDiscountList();};
+  document.querySelectorAll("#discTable .linkish").forEach(el=>
+    el.onclick=()=>selectProduct(el.dataset.sku));
+}
 function productCities(sku){
   const set=new Set();
   RAW.latest.forEach(r=>{if(r.masterSku==sku)set.add(r.city);});
@@ -378,7 +443,7 @@ function selectProduct(sku){
 })();
 
 // ── сборка ──
-function renderAll(){ renderKPI(); renderCharts(); renderTables(); if(STATE.sku)renderProduct(); }
+function renderAll(){ renderKPI(); renderDiscountList(); renderCharts(); renderTables(); if(STATE.sku)renderProduct(); }
 
 function buildCityFilter(){
   const cities=[...new Set(RAW.latest.map(r=>r.city))];
@@ -402,6 +467,7 @@ async function init(){
   const [runs,changes,latest]=await Promise.all([load("runs"),load("changes"),load("latest")]);
   RAW={runs,changes,latest};
   buildProductIndex();
+  buildDiscountIndex();
   const last = runs.length? runs.map(r=>r.ts).sort().at(-1) : null;
   document.getElementById("updated").textContent = last ?
     ("Последний снимок: "+last.replace("T"," ").replace("Z"," UTC")+" · всего замеров: "+new Set(runs.map(r=>r.ts)).size) :
