@@ -318,12 +318,41 @@ function ago(ts){
   if(h<48) return Math.round(h)+" ч назад";
   return Math.round(h/24)+" дн назад";
 }
+// HIKE[sku|city] — было ли повышение цены перед появлением текущей скидки:
+// последнее изменение цены ДО старта скидки, и только если это было повышение
+let HIKE={};
+function buildHikeIndex(){
+  const byKey={};
+  RAW.changes.forEach(r=>{ if(r.field=="price")
+    (byKey[r.masterSku+"|"+r.city]=byKey[r.masterSku+"|"+r.city]||[]).push(r); });
+  HIKE={};
+  Object.keys(DISC_START).forEach(k=>{
+    const start=DISC_START[k];
+    const before=(byKey[k]||[]).filter(r=>r.ts<=start).sort((a,b)=>a.ts<b.ts?-1:1);
+    const last=before[before.length-1];
+    if(last && +last.new>+last.old)
+      HIKE[k]={days:(new Date(start)-new Date(last.ts))/864e5, ts:last.ts, old:+last.old, new:+last.new};
+  });
+}
+function hikeCell(p){
+  // берём город, чей старт скидки совпадает с показанным, иначе любой с данными
+  let h=null,start=null;
+  for(const c of p.cities){
+    const hh=c.start?HIKE[p.sku+"|"+c.code]:null;
+    if(hh&&(c.start==p.start||!h)){h=hh;start=c.start; if(c.start==p.start)break;}
+  }
+  if(!h) return `<td class="muted" title="перед скидкой цену не поднимали (или подняли ещё до начала наблюдений)">—</td>`;
+  const tip=`подняли ${shortTs(h.ts)}: ${fmt(h.old)}→${fmt(h.new)} ₸ · скидка с ${shortTs(start)}`;
+  if(h.days<1/12) return `<td class="up" title="${tip}">в тот же час ⚠</td>`;
+  if(h.days<1) return `<td title="${tip}">меньше дня</td>`;
+  return `<td title="${tip}">${Math.round(h.days)} дн</td>`;
+}
 function renderDiscountList(){
   const lat=RAW.latest.filter(r=>+r.discount>0&&(STATE.city=="all"||r.city==STATE.city));
   const bySku={};
   lat.forEach(r=>{
     (bySku[r.masterSku]=bySku[r.masterSku]||{sku:r.masterSku,title:r.title,cities:[]}).cities.push(
-      {name:r.cityName,disc:+r.discount,price:+r.price,start:DISC_START[r.masterSku+"|"+r.city]||null});
+      {code:r.city,name:r.cityName,disc:+r.discount,price:+r.price,start:DISC_START[r.masterSku+"|"+r.city]||null});
   });
   const rows=Object.values(bySku).map(p=>{
     p.maxDisc=Math.max(...p.cities.map(c=>c.disc));
@@ -342,13 +371,14 @@ function renderDiscountList(){
   const LIM=30, all=STATE.discAll, shown=all?rows:rows.slice(0,LIM);
   const fresh24=new Date(Date.now()-864e5).toISOString();
   document.getElementById("discTable").innerHTML = rows.length ?
-    `<table><thead><tr><th>Товар</th><th class="num">Скидка</th><th class="num">Цена</th><th>Города</th><th>Скидка появилась</th></tr></thead><tbody>`+
+    `<table><thead><tr><th>Товар</th><th class="num">Скидка</th><th class="num">Цена</th><th>Города</th><th>Скидка появилась</th><th title="сколько держалась повышенная цена до появления скидки">Цену подняли за</th></tr></thead><tbody>`+
     shown.map(p=>{
       const isFresh=p.start&&p.start>=fresh24;
       return `<tr><td><span class="linkish" data-sku="${esc(p.sku)}">${esc(p.title).slice(0,48)}</span></td>
       <td class="num">${p.maxDisc}%</td><td class="num">${fmt(p.price)} ₸</td>
       <td>${p.cities.map(c=>`<span class="pill">${esc(c.name)} ${c.disc}%</span>`).join(" ")}</td>
-      <td class="muted" title="${p.start||""}">${p.start?ago(p.start):"до начала наблюдений"}${isFresh?' <span class="pill new">новая</span>':""}</td></tr>`;
+      <td class="muted" title="${p.start||""}">${p.start?ago(p.start):"до начала наблюдений"}${isFresh?' <span class="pill new">новая</span>':""}</td>
+      ${hikeCell(p)}</tr>`;
     }).join("")+`</tbody></table>` : `<div class="empty">сейчас ни одного товара со скидкой</div>`;
   const btn=document.getElementById("discMore");
   btn.hidden=rows.length<=LIM;
@@ -468,6 +498,7 @@ async function init(){
   RAW={runs,changes,latest};
   buildProductIndex();
   buildDiscountIndex();
+  buildHikeIndex();
   const last = runs.length? runs.map(r=>r.ts).sort().at(-1) : null;
   document.getElementById("updated").textContent = last ?
     ("Последний снимок: "+last.replace("T"," ").replace("Z"," UTC")+" · всего замеров: "+new Set(runs.map(r=>r.ts)).size) :
